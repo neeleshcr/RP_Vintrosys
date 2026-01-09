@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 # import frappe
+# Fix: Improve item group aggregation for blended finished goods
 
 
 import frappe
@@ -394,60 +395,79 @@ class Analytics(object):
 		self.get_groups()
 
 	def get_sales_transactions_based_on_item_group(self):
+
 		if self.filters["value_quantity"] == "Value":
 			value_field = "base_amount"
 
-
 			self.entries = frappe.db.sql(
 				"""
-				select i.item_group as entity, i.{value_field} as value_field, s.{date_field}
-				from `tab{doctype} Item` i , `tab{doctype}` s
-				where s.name = i.parent and i.docstatus = 1 and s.company = %s
-				and s.{date_field} between %s and %s
-			""".format(
-					date_field=self.date_field, value_field=value_field, doctype=self.filters.doc_type
+				SELECT
+					i.item_group AS entity,
+					i.{value_field} AS value_field,
+					s.{date_field} AS posting_date
+				FROM `tab{doctype} Item` i
+				JOIN `tab{doctype}` s ON s.name = i.parent
+				WHERE i.docstatus = 1
+				  AND s.company = %s
+				  AND s.{date_field} BETWEEN %s AND %s
+				""".format(
+					date_field=self.date_field,
+					value_field=value_field,
+					doctype=self.filters.doc_type,
 				),
 				(self.filters.company, self.filters.from_date, self.filters.to_date),
 				as_dict=1,
 			)
-
-
-
-
 
 		elif self.filters["value_quantity"] == "Quantity":
-			value_field = "qty*i.weight_per_unit)"
 			self.entries = frappe.db.sql(
 				"""
-				select i.item_group as entity, sum(i.{value_field} as value_field, s.{date_field}
-				from `tab{doctype} Item` i , `tab{doctype}` s
-				where s.name = i.parent and i.docstatus = 1 and s.company = %s
-				and s.{date_field} between %s and %s
-				group by s.name,i.item_group
-
-			""".format(
-					date_field=self.date_field, value_field=value_field, doctype=self.filters.doc_type
+				SELECT
+					i.item_group AS entity,
+					SUM(i.qty * i.weight_per_unit) AS value_field,
+					s.{date_field} AS posting_date,
+					s.name AS parent_doc
+				FROM `tab{doctype} Item` i
+				JOIN `tab{doctype}` s ON s.name = i.parent
+				WHERE i.docstatus = 1
+				  AND s.company = %s
+				  AND s.{date_field} BETWEEN %s AND %s
+				GROUP BY i.item_group, s.{date_field}, s.name
+				""".format(
+					date_field=self.date_field,
+					doctype=self.filters.doc_type,
 				),
 				(self.filters.company, self.filters.from_date, self.filters.to_date),
 				as_dict=1,
 			)
-		
 
 		elif self.filters["value_quantity"] == "QuantityWschm":
-			value_field = "qty*i.weight_per_unit)"
-			
 			self.entries = frappe.db.sql(
-				f"""
-				select i.item_group as entity,sum(i.{value_field} as value_field, s.{self.date_field},s.name as name
-				from `tab{self.filters.doc_type} Item` i , `tab{self.filters.doc_type}` s
-				where s.name = i.parent and i.docstatus = 1 and s.company = '{self.filters.company}'
-				and s.{self.date_field} between '{self.filters.from_date}' and '{self.filters.to_date}'  and  i.item_code NOT LIKE '%Schm%'
-				group by s.name,i.item_group
-
-				""",as_dict=1,)
-				# group by s.name
+				"""
+				SELECT
+					i.item_group AS entity,
+					SUM(i.qty * i.weight_per_unit) AS value_field,
+					s.{date_field} AS posting_date,
+					s.name AS parent_doc
+				FROM `tab{doctype} Item` i
+				JOIN `tab{doctype}` s ON s.name = i.parent
+				WHERE i.docstatus = 1
+				  AND s.company = %s
+				  AND s.{date_field} BETWEEN %s AND %s
+				  AND i.item_code NOT LIKE '%Schm%'
+				GROUP BY i.item_group, s.{date_field}, s.name
+				""".format(
+					date_field=self.date_field,
+					doctype=self.filters.doc_type,
+				),
+				(self.filters.company, self.filters.from_date, self.filters.to_date),
+				as_dict=1,
+			)
 
 		self.get_groups()
+
+
+
 
 	def get_sales_transactions_based_on_project(self):
 		if self.filters["value_quantity"] == "Value":
