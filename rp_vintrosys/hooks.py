@@ -244,6 +244,18 @@ app_license = "mit"
 
 fixtures = [
     {
+        "dt": "Custom Field",
+        "filters": [
+            ["dt", "=", "POS Invoice"]
+        ]
+    },
+    {
+        "dt": "Property Setter",
+        "filters": [
+            ["doc_type", "=", "POS Invoice"]
+        ]
+    },
+    {
         "dt": "Server Script",
         "filters": [
             ["name", "in", ["Salary Slip"]]
