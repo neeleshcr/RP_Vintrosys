@@ -1,0 +1,81 @@
+frappe.ui.form.on('Sales Order', {
+	customer: function(frm) {
+		if (frm.doc.customer) {
+			frappe.after_ajax(() => {
+				setTimeout(() => {
+					apply_custom_pricing_rules(frm);
+				}, 400);
+			});
+		}
+	},
+	selling_price_list: function(frm) {
+		if (frm.doc.customer) {
+			frappe.after_ajax(() => {
+				setTimeout(() => {
+					apply_custom_pricing_rules(frm);
+				}, 400);
+			});
+		}
+	}
+});
+
+frappe.ui.form.on('Sales Order Item', {
+	item_code: function(frm, cdt, cdn) {
+		frappe.after_ajax(() => {
+			setTimeout(() => {
+				apply_custom_pricing_rules(frm);
+			}, 300);
+		});
+	},
+	qty: function(frm, cdt, cdn) {
+		frappe.after_ajax(() => {
+			setTimeout(() => {
+				apply_custom_pricing_rules(frm);
+			}, 300);
+		});
+	},
+	uom: function(frm, cdt, cdn) {
+		frappe.after_ajax(() => {
+			setTimeout(() => {
+				apply_custom_pricing_rules(frm);
+			}, 300);
+		});
+	}
+});
+
+function apply_custom_pricing_rules(frm) {
+	if (!frm.doc.customer || !frm.doc.items || !frm.doc.items.length) return;
+
+	frappe.call({
+		method: 'rp_vintrosys.overrides.sales_order.get_pricing_rule_details',
+		args: {
+			doc: frm.doc
+		},
+		callback: function(r) {
+			if (r.message && Array.isArray(r.message)) {
+				r.message.forEach((item_data, idx) => {
+					let row = frm.doc.items[idx];
+					if (row && item_data) {
+						row.pricing_rules = item_data.pricing_rules || '';
+						if (item_data.price_list_rate !== undefined) {
+							row.price_list_rate = item_data.price_list_rate;
+						}
+						if (item_data.discount_percentage !== undefined) {
+							row.discount_percentage = item_data.discount_percentage;
+						}
+						if (item_data.discount_amount !== undefined) {
+							row.discount_amount = item_data.discount_amount;
+						}
+						if (item_data.rate !== undefined) {
+							row.rate = item_data.rate;
+						}
+						if (item_data.amount !== undefined) {
+							row.amount = item_data.amount;
+						}
+					}
+				});
+				frm.refresh_field('items');
+			}
+		}
+	});
+}
