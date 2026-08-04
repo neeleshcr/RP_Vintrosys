@@ -140,6 +140,10 @@ doc_events = {
 	"Sales Order": {
 		"before_validate": "rp_vintrosys.overrides.sales_order.apply_pricing_rule",
 		"validate": "rp_vintrosys.overrides.sales_order.apply_pricing_rule",
+	},
+	"Sales Invoice": {
+		"before_validate": "rp_vintrosys.overrides.sales_invoice.fix_consolidated_sales_invoice_gst",
+		"validate": "rp_vintrosys.overrides.sales_invoice.fix_consolidated_sales_invoice_gst",
 	}
 }
 

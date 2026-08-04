@@ -112,3 +112,24 @@ def get_pricing_rule_details(doc):
             "amount": item.amount,
         })
     return items_data
+
+
+def inspect_rp_app():
+    import pkgutil, importlib, inspect
+    import india_compliance
+    for importer, modname, ispkg in pkgutil.walk_packages(india_compliance.__path__, india_compliance.__name__ + "."):
+        try:
+            mod = importlib.import_module(modname)
+            for name, obj in inspect.getmembers(mod, inspect.isfunction):
+                src = inspect.getsource(obj)
+                if "No GST is being charged on Taxable Items" in src:
+                    print("FOUND IN FUNC:", name, "in module:", modname)
+                    print(src)
+            for name, obj in inspect.getmembers(mod, inspect.isclass):
+                for mname, mobj in inspect.getmembers(obj, inspect.isfunction):
+                    src = inspect.getsource(mobj)
+                    if "No GST is being charged on Taxable Items" in src:
+                        print("FOUND IN METHOD:", name, ".", mname, "in module:", modname)
+                        print(src)
+        except Exception:
+            pass
