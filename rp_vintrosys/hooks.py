@@ -128,9 +128,13 @@ doctype_js = {
 # ---------------
 # Override standard doctype classes
 
-# override_doctype_class = {
-# 	"ToDo": "custom_app.overrides.CustomToDo"
-# }
+override_doctype_class = {
+	"Sales Order": "rp_vintrosys.overrides.sales_order.CustomSalesOrder"
+}
+
+after_migrate = [
+	"rp_vintrosys.overrides.sales_order.create_custom_fields"
+]
 
 # Document Events
 # ---------------
