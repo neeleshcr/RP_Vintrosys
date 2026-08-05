@@ -134,15 +134,18 @@ def apply_pricing_rule(doc, method=None):
                         _precision(item, "rate")
                     )
         else:
-            # No rule found – reset discount fields, keep existing rate if user set it
-            item.pricing_rules = None
-            item.discount_percentage = 0.0
-            item.discount_amount = 0.0
+            # No rule found via our lookup.
+            # If ERPNext's standard flow already set a pricing rule on this row,
+            # preserve it — don't wipe the discount.
+            if not item.get("pricing_rules"):
+                item.pricing_rules = None
+                item.discount_percentage = 0.0
+                item.discount_amount = 0.0
 
-            plr = flt(item.price_list_rate)
-            current_rate = flt(item.rate)
-            if plr > 0 and (current_rate == 0 or current_rate == plr):
-                item.rate = flt(plr, _precision(item, "rate"))
+                plr = flt(item.price_list_rate)
+                current_rate = flt(item.rate)
+                if plr > 0 and (current_rate == 0 or current_rate == plr):
+                    item.rate = flt(plr, _precision(item, "rate"))
 
         item.amount = flt(item.rate * item.qty, _precision(item, "amount"))
 

@@ -1,8 +1,13 @@
+// Sales Order – Manual Rate Preservation
+// ERPNext already handles item_code pricing rule application natively.
+// We only need to re-apply rules when customer/price-list changes for existing rows,
+// and to protect manually-entered rates from being overwritten.
+
 frappe.ui.form.on('Sales Order', {
 	customer: function(frm) {
 		if (frm.doc.customer) {
 			frappe.after_ajax(() => {
-				setTimeout(() => apply_custom_pricing_rules(frm), 400);
+				setTimeout(() => apply_custom_pricing_rules(frm), 500);
 			});
 		}
 	},
@@ -10,31 +15,19 @@ frappe.ui.form.on('Sales Order', {
 	selling_price_list: function(frm) {
 		if (frm.doc.customer) {
 			frappe.after_ajax(() => {
-				setTimeout(() => apply_custom_pricing_rules(frm), 400);
+				setTimeout(() => apply_custom_pricing_rules(frm), 500);
 			});
 		}
 	}
 });
 
 frappe.ui.form.on('Sales Order Item', {
-	item_code: function(frm, cdt, cdn) {
-		let row = frappe.get_doc(cdt, cdn);
-		row.ignore_pricing_rule = 0;
-		frappe.after_ajax(() => {
-			setTimeout(() => apply_custom_pricing_rules(frm), 300);
-		});
-	},
-
 	qty: function(frm, cdt, cdn) {
 		let row = frappe.get_doc(cdt, cdn);
 		if (cint(row.ignore_pricing_rule)) {
 			row.amount = flt(row.rate * flt(row.qty), precision('amount', row));
 			frm.refresh_field('items');
 			frm.trigger('calculate_taxes_and_totals');
-		} else {
-			frappe.after_ajax(() => {
-				setTimeout(() => apply_custom_pricing_rules(frm), 300);
-			});
 		}
 	},
 
@@ -44,10 +37,6 @@ frappe.ui.form.on('Sales Order Item', {
 			row.amount = flt(row.rate * flt(row.qty), precision('amount', row));
 			frm.refresh_field('items');
 			frm.trigger('calculate_taxes_and_totals');
-		} else {
-			frappe.after_ajax(() => {
-				setTimeout(() => apply_custom_pricing_rules(frm), 300);
-			});
 		}
 	},
 
@@ -78,20 +67,21 @@ function apply_custom_pricing_rules(frm) {
 		method: 'rp_vintrosys.overrides.sales_order.get_pricing_rule_details',
 		args: { doc: frm.doc },
 		callback: function(r) {
-			if (r.message && Array.isArray(r.message)) {
-				r.message.forEach((item_data, idx) => {
-					let row = frm.doc.items[idx];
-					if (!row || !item_data || cint(row.ignore_pricing_rule)) return;
+			if (!r.message || !Array.isArray(r.message)) return;
 
-					row.pricing_rules       = item_data.pricing_rules || '';
-					row.price_list_rate     = item_data.price_list_rate;
-					row.discount_percentage = item_data.discount_percentage;
-					row.discount_amount     = item_data.discount_amount;
-					row.rate                = item_data.rate;
-					row.amount              = item_data.amount;
-				});
-				frm.refresh_field('items');
-			}
+			r.message.forEach((item_data, idx) => {
+				let row = frm.doc.items[idx];
+				if (!row || !item_data || cint(row.ignore_pricing_rule)) return;
+
+				row.pricing_rules       = item_data.pricing_rules || '';
+				row.price_list_rate     = item_data.price_list_rate;
+				row.discount_percentage = item_data.discount_percentage;
+				row.discount_amount     = item_data.discount_amount;
+				row.rate                = item_data.rate;
+				row.amount              = item_data.amount;
+			});
+
+			frm.refresh_field('items');
 		}
 	});
 }
