@@ -1,83 +1,92 @@
-"""
-rp_vintrosys/overrides/sales_order.py
-
-Sales Order – Manual Rate Preservation
----------------------------------------
-When a user manually edits an item's rate, the JS sets ignore_pricing_rule = 1
-on that row. This module ensures that flag is respected on the server side,
-preventing ERPNext's validate cycle from overwriting the user-entered rate.
-"""
-
 import frappe
 from frappe.utils import flt, today
-from erpnext.selling.doctype.sales_order.sales_order import SalesOrder
 from erpnext.accounts.doctype.pricing_rule.pricing_rule import get_pricing_rule_for_item
 
 
-def create_custom_fields():
-    """Ensure the ignore_pricing_rule Check field exists on Sales Order Item."""
-    if not frappe.db.exists("Custom Field", "Sales Order Item-ignore_pricing_rule"):
-        frappe.get_doc({
-            "doctype": "Custom Field",
-            "dt": "Sales Order Item",
-            "fieldname": "ignore_pricing_rule",
-            "label": "Ignore Pricing Rule",
+def setup_custom_fields():
+    """
+    Ensures custom_is_rate_overridden and custom_manual_rate fields exist on Sales Order Item.
+    """
+    fields_to_create = []
+    if not frappe.db.exists("Custom Field", {"dt": "Sales Order Item", "fieldname": "custom_is_rate_overridden"}):
+        fields_to_create.append({
+            "fieldname": "custom_is_rate_overridden",
+            "label": "Rate Overridden Manually",
             "fieldtype": "Check",
             "default": "0",
-            "insert_after": "pricing_rules"
-        }).insert(ignore_permissions=True)
-        frappe.clear_cache(doctype="Sales Order Item")
+            "read_only": 1,
+            "insert_after": "rate",
+            "description": "Set to 1 when item rate is manually edited by user to prevent pricing rules from overwriting it."
+        })
+    if not frappe.db.exists("Custom Field", {"dt": "Sales Order Item", "fieldname": "custom_manual_rate"}):
+        fields_to_create.append({
+            "fieldname": "custom_manual_rate",
+            "label": "Manual Rate Override",
+            "fieldtype": "Currency",
+            "options": "currency",
+            "default": "0",
+            "read_only": 1,
+            "insert_after": "custom_is_rate_overridden",
+            "description": "Stores user manually edited item rate."
+        })
 
+    if fields_to_create:
+        from frappe.custom.doctype.custom_field.custom_field import create_custom_fields
+        create_custom_fields({"Sales Order Item": fields_to_create})
 
-class CustomSalesOrder(SalesOrder):
-    """
-    Overrides apply_pricing_rule_on_items so that rows with
-    ignore_pricing_rule == 1 are left untouched by ERPNext's
-    internal set_missing_item_details() → apply_pricing_rule_on_items() call.
-    """
-
-    def apply_pricing_rule_on_items(self, item, pricing_rule_args):
-        if flt(item.get("ignore_pricing_rule")):
-            # Keep the user-entered rate; just ensure amount is consistent
-            item.pricing_rules = None
-            item.discount_percentage = 0.0
-            item.discount_amount = 0.0
-            item.price_list_rate = flt(item.rate)
-            item.amount = flt(item.rate * item.qty, _precision(item, "amount"))
-            return
-        super().apply_pricing_rule_on_items(item, pricing_rule_args)
-
-
-# ---------------------------------------------------------------------------
-# Doc Event Hook  (before_validate + validate)
-# ---------------------------------------------------------------------------
 
 def apply_pricing_rule(doc, method=None):
     """
-    Applies pricing rules to Sales Order items.
-    Rows with ignore_pricing_rule == 1 are preserved as-is.
+    Server-side hook for Sales Order doc_events (before_validate/validate).
+    Ensures ERPNext Pricing Rules are resolved and applied to each Sales Order item row,
+    WHILE preserving manually overridden item rates.
     """
     if not doc.get("customer") or not doc.get("items"):
         return
 
-    create_custom_fields()
-
+    setup_custom_fields()
     customer_group = frappe.db.get_value("Customer", doc.customer, "customer_group")
 
-    for item in doc.items:
-        if not item.item_code:
+    for item in doc.get("items"):
+        if not item.item_code or item.get("ignore_pricing_rule"):
             continue
 
-        if flt(item.get("ignore_pricing_rule")):
-            # Manual override – keep rate, just sync dependent fields
-            item.pricing_rules = None
-            item.discount_percentage = 0.0
-            item.discount_amount = 0.0
-            item.price_list_rate = flt(item.rate)
-            item.amount = flt(item.rate * item.qty, _precision(item, "amount"))
+        # If user manually edited the rate, restore custom_manual_rate, set discount_amount/price_list_rate, and recalculate totals
+        if item.get("custom_is_rate_overridden"):
+            if not item.get("custom_manual_rate") and flt(item.rate) > 0:
+                item.custom_manual_rate = flt(item.rate)
+            
+            target_rate = flt(item.get("custom_manual_rate") or item.rate)
+            rate_precision = item.precision("rate") if hasattr(item, "precision") else 2
+            item.rate = flt(target_rate, rate_precision)
+            item.custom_manual_rate = item.rate
+
+            if flt(item.price_list_rate) > 0 and item.price_list_rate > item.rate:
+                disc_prec = item.precision("discount_amount") if hasattr(item, "precision") else 2
+                item.discount_amount = flt(item.price_list_rate - item.rate, disc_prec)
+                item.discount_percentage = flt((item.discount_amount / item.price_list_rate) * 100.0, 6)
+            else:
+                item.discount_percentage = 0.0
+                item.discount_amount = 0.0
+                item.price_list_rate = item.rate
+
+            item.margin_type = None
+            item.margin_rate_or_amount = 0.0
+
+            amt_precision = item.precision("amount") if hasattr(item, "precision") else 2
+            item.amount = flt(flt(item.rate) * (flt(item.qty) or 1.0), amt_precision)
+
+            conversion_rate = flt(getattr(doc, "conversion_rate", 1.0)) or 1.0
+            base_rate_prec = item.precision("base_rate") if hasattr(item, "precision") else 2
+            base_amt_prec = item.precision("base_amount") if hasattr(item, "precision") else 2
+            item.base_rate = flt(item.rate * conversion_rate, base_rate_prec)
+            item.base_amount = flt(item.amount * conversion_rate, base_amt_prec)
+            item.net_rate = item.rate
+            item.net_amount = item.amount
+            item.base_net_rate = item.base_rate
+            item.base_net_amount = item.base_amount
             continue
 
-        # Fetch price_list_rate from Item Price if missing
         if not flt(item.price_list_rate) and doc.selling_price_list:
             item.price_list_rate = flt(frappe.db.get_value(
                 "Item Price",
@@ -86,7 +95,7 @@ def apply_pricing_rule(doc, method=None):
             ))
 
         args = frappe._dict({
-            "doctype": "Sales Order",
+            "doctype": doc.doctype or "Sales Order",
             "transaction_type": "selling",
             "company": doc.company,
             "customer": doc.customer,
@@ -101,7 +110,7 @@ def apply_pricing_rule(doc, method=None):
             "conversion_factor": flt(item.conversion_factor) or 1.0,
             "price_list_rate": flt(item.price_list_rate),
             "rate": flt(item.rate),
-            "ignore_pricing_rule": 0,
+            "ignore_pricing_rule": item.get("ignore_pricing_rule", 0),
         })
 
         rule = get_pricing_rule_for_item(args)
@@ -111,81 +120,97 @@ def apply_pricing_rule(doc, method=None):
             if pricing_rules:
                 item.pricing_rules = pricing_rules
 
-            discount_pct = flt(rule.get("discount_percentage", 0))
-            disc_amt     = flt(rule.get("discount_amount", 0))
+            discount = flt(rule.get("discount_percentage", 0))
+            disc_amt = flt(rule.get("discount_amount", 0))
 
-            if discount_pct > 0:
-                item.discount_percentage = discount_pct
+            if discount > 0:
+                item.discount_percentage = discount
                 if flt(item.price_list_rate) > 0:
-                    item.discount_amount = flt(
-                        item.price_list_rate * (discount_pct / 100.0),
-                        _precision(item, "discount_amount")
-                    )
-                    item.rate = flt(
-                        item.price_list_rate - item.discount_amount,
-                        _precision(item, "rate")
-                    )
+                    precision = item.precision("discount_amount") if hasattr(item, "precision") else 2
+                    item.discount_amount = flt(item.price_list_rate * (discount / 100.0), precision)
+                    rate_precision = item.precision("rate") if hasattr(item, "precision") else 2
+                    item.rate = flt(item.price_list_rate - item.discount_amount, rate_precision)
             elif disc_amt > 0:
                 item.discount_amount = disc_amt
                 if flt(item.price_list_rate) > 0:
                     item.discount_percentage = flt((disc_amt / item.price_list_rate) * 100.0)
-                    item.rate = flt(
-                        item.price_list_rate - disc_amt,
-                        _precision(item, "rate")
-                    )
+                    rate_precision = item.precision("rate") if hasattr(item, "precision") else 2
+                    item.rate = flt(item.price_list_rate - disc_amt, rate_precision)
+
+            amt_precision = item.precision("amount") if hasattr(item, "precision") else 2
+            item.amount = flt(flt(item.rate) * flt(item.qty), amt_precision)
         else:
-            # No rule found via our lookup.
-            # If ERPNext's standard flow already set a pricing rule on this row,
-            # preserve it — don't wipe the discount.
-            if not item.get("pricing_rules"):
-                item.pricing_rules = None
-                item.discount_percentage = 0.0
-                item.discount_amount = 0.0
+            item.pricing_rules = None
+            item.discount_percentage = 0.0
+            item.discount_amount = 0.0
+            if flt(item.price_list_rate) > 0:
+                rate_precision = item.precision("rate") if hasattr(item, "precision") else 2
+                item.rate = flt(item.price_list_rate, rate_precision)
+            amt_precision = item.precision("amount") if hasattr(item, "precision") else 2
+            item.amount = flt(flt(item.rate) * flt(item.qty), amt_precision)
 
-                plr = flt(item.price_list_rate)
-                current_rate = flt(item.rate)
-                if plr > 0 and (current_rate == 0 or current_rate == plr):
-                    item.rate = flt(plr, _precision(item, "rate"))
-
-        item.amount = flt(item.rate * item.qty, _precision(item, "amount"))
+        conversion_rate = flt(getattr(doc, "conversion_rate", 1.0)) or 1.0
+        base_rate_prec = item.precision("base_rate") if hasattr(item, "precision") else 2
+        base_amt_prec = item.precision("base_amount") if hasattr(item, "precision") else 2
+        item.base_rate = flt(item.rate * conversion_rate, base_rate_prec)
+        item.base_amount = flt(item.amount * conversion_rate, base_amt_prec)
+        item.net_rate = item.rate
+        item.net_amount = item.amount
+        item.base_net_rate = item.base_rate
+        item.base_net_amount = item.base_amount
 
     if hasattr(doc, "calculate_taxes_and_totals"):
         doc.calculate_taxes_and_totals()
 
 
-# ---------------------------------------------------------------------------
-# Whitelisted endpoint for JS client
-# ---------------------------------------------------------------------------
-
 @frappe.whitelist()
 def get_pricing_rule_details(doc):
+    """
+    Whitelisted endpoint for client-side JS on Sales Order form.
+    Receives Sales Order doc (dict or JSON string), applies pricing rules to item rows, and returns updated item details.
+    """
     if isinstance(doc, str):
         doc = frappe.parse_json(doc)
-    doc_obj = frappe.get_doc(doc) if isinstance(doc, dict) else doc
+
+    if isinstance(doc, dict):
+        doc_obj = frappe.get_doc(doc)
+    else:
+        doc_obj = doc
+
     apply_pricing_rule(doc_obj)
 
-    return [
-        {
+    items_data = []
+    for item in doc_obj.items:
+        items_data.append({
             "docname": item.name,
             "item_code": item.item_code,
-            "ignore_pricing_rule": flt(item.get("ignore_pricing_rule", 0)),
             "pricing_rules": item.pricing_rules,
             "discount_percentage": item.discount_percentage,
             "discount_amount": item.discount_amount,
             "price_list_rate": item.price_list_rate,
             "rate": item.rate,
             "amount": item.amount,
-        }
-        for item in doc_obj.items
-    ]
+            "custom_is_rate_overridden": item.get("custom_is_rate_overridden", 0),
+        })
+    return items_data
 
 
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
-
-def _precision(item, fieldname, default=2):
-    try:
-        return item.precision(fieldname)
-    except Exception:
-        return default
+def inspect_rp_app():
+    import pkgutil, importlib, inspect
+    import india_compliance
+    for importer, modname, ispkg in pkgutil.walk_packages(india_compliance.__path__, india_compliance.__name__ + "."):
+        try:
+            mod = importlib.import_module(modname)
+            for name, obj in inspect.getmembers(mod, inspect.isfunction):
+                src = inspect.getsource(obj)
+                if "No GST is being charged on Taxable Items" in src:
+                    print("FOUND IN FUNC:", name, "in module:", modname)
+                    print(src)
+            for name, obj in inspect.getmembers(mod, inspect.isclass):
+                for mname, mobj in inspect.getmembers(obj, inspect.isfunction):
+                    src = inspect.getsource(mobj)
+                    if "No GST is being charged on Taxable Items" in src:
+                        print("FOUND IN METHOD:", name, ".", mname, "in module:", modname)
+                        print(src)
+        except Exception:
+            pass
