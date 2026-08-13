@@ -1,153 +1,142 @@
-let _rp_setting_pricing = false;
+let is_applying_pricing_rules = false;
+let pricing_request_sequence = 0; 
 
 frappe.ui.form.on('Sales Order', {
-	customer: function(frm) {
-		if (frm.doc.customer) {
-			_rp_setting_pricing = true;
-			frappe.after_ajax(() => {
-				setTimeout(() => {
-					apply_custom_pricing_rules(frm);
-				}, 400);
-			});
-		}
-	},
-	selling_price_list: function(frm) {
-		if (frm.doc.customer) {
-			_rp_setting_pricing = true;
-			frappe.after_ajax(() => {
-				setTimeout(() => {
-					apply_custom_pricing_rules(frm);
-				}, 400);
-			});
-		}
-	}
+	setup: take_over_native_qty_handler,
+	customer: recompute_after_native_flow,
+	selling_price_list: recompute_after_native_flow,
 });
 
 frappe.ui.form.on('Sales Order Item', {
-	item_code: function(frm, cdt, cdn) {
-		_rp_setting_pricing = true;
-		let row = locals[cdt][cdn];
-		if (row) {
-			row.custom_is_rate_overridden = 0;
-			row.custom_manual_rate = 0;
-			row.custom_is_discount_explicit = 0;
-			row.custom_explicit_discount = 0;
-		}
-		frappe.after_ajax(() => {
-			setTimeout(() => {
-				apply_custom_pricing_rules(frm);
-			}, 300);
-		});
-	},
-
-	qty: function(frm, cdt, cdn) {
-		_rp_setting_pricing = true;
-		frappe.after_ajax(() => {
-			setTimeout(() => {
-				apply_custom_pricing_rules(frm);
-			}, 300);
-		});
-	},
-
-	uom: function(frm, cdt, cdn) {
-		_rp_setting_pricing = true;
-		frappe.after_ajax(() => {
-			setTimeout(() => {
-				apply_custom_pricing_rules(frm);
-			}, 300);
-		});
-	},
-
-	rate: function(frm, cdt, cdn) {
-		if (_rp_setting_pricing) return;
-		let row = locals[cdt][cdn];
-		if (!row || !row.item_code) return;
-
-		row.custom_is_rate_overridden = 1;
-		row.custom_manual_rate = flt(row.rate);
-	},
-
-	amount: function(frm, cdt, cdn) {
-		if (_rp_setting_pricing) return;
-		let row = locals[cdt][cdn];
-		if (!row || !row.item_code || !flt(row.qty)) return;
-
-		let calc_rate = flt(row.amount) / flt(row.qty);
-		row.custom_is_rate_overridden = 1;
-		row.custom_manual_rate = flt(calc_rate);
-	},
-
-	discount_percentage: function(frm, cdt, cdn) {
-		if (_rp_setting_pricing) return;
-		let row = locals[cdt][cdn];
-		if (!row || !row.item_code) return;
-
-		row.custom_is_discount_explicit = 1;
-		row.custom_explicit_discount = flt(row.discount_percentage);
-
-		_rp_setting_pricing = true;
-		frappe.after_ajax(() => {
-			setTimeout(() => {
-				apply_custom_pricing_rules(frm);
-			}, 300);
-		});
-	}
+	item_code: on_item_code_change,
+	qty: on_qty_change,
+	uom: on_uom_change,
+	rate: on_rate_change,
+	amount: on_amount_change,
+	discount_percentage: on_discount_percentage_change,
 });
 
-function apply_custom_pricing_rules(frm) {
-	if (!frm.doc.customer || !frm.doc.items || !frm.doc.items.length) {
-		_rp_setting_pricing = false;
-		return;
-	}
+
+function take_over_native_qty_handler(frm) {
+	if (!frm.cscript) return;
+	frm.cscript.qty = function (doc, cdt, cdn) {
+		let row = frappe.get_doc(cdt, cdn);
+		if (!row) return;
+		row.amount = flt(flt(row.rate) * flt(row.qty), precision('amount', row));
+		frm.refresh_field('items');
+		apply_pricing_rules(frm);
+	};
+}
+
+function recompute_after_native_flow(frm) {
+	if (!frm.doc.customer) return;
+	frappe.after_ajax(() => setTimeout(() => apply_pricing_rules(frm), 400));
+}
+
+function on_item_code_change(frm, cdt, cdn) {
+	reset_row_override(locals[cdt][cdn]);
+	frappe.after_ajax(() => setTimeout(() => apply_pricing_rules(frm), 300));
+}
+
+function on_qty_change(frm) {
+	if (!is_applying_pricing_rules) apply_pricing_rules(frm);
+}
+
+function on_uom_change(frm) {
+	if (is_applying_pricing_rules) return;
+	frappe.after_ajax(() => setTimeout(() => apply_pricing_rules(frm), 300));
+}
+
+function on_rate_change(frm, cdt, cdn) {
+	if (is_applying_pricing_rules) return;
+	let row = locals[cdt][cdn];
+	if (!row || !row.item_code) return;
+	set_rate_override(row, flt(row.rate));
+	apply_pricing_rules(frm);
+}
+
+function on_amount_change(frm, cdt, cdn) {
+	if (is_applying_pricing_rules) return;
+	let row = locals[cdt][cdn];
+	if (!row || !row.item_code || !flt(row.qty)) return;
+	set_rate_override(row, flt(row.amount) / flt(row.qty));
+	apply_pricing_rules(frm);
+}
+
+function on_discount_percentage_change(frm, cdt, cdn) {
+	if (is_applying_pricing_rules) return;
+	let row = locals[cdt][cdn];
+	if (!row || !row.item_code) return;
+	set_discount_override(row, flt(row.discount_percentage));
+	apply_pricing_rules(frm);
+}
+
+// A manual Rate/Amount and a manual Discount % are mutually exclusive - setting one always
+// clears the other so the two can never disagree about which value is authoritative.
+function set_rate_override(row, rate) {
+	row.custom_is_rate_overridden = 1;
+	row.custom_manual_rate = rate;
+	row.custom_is_discount_explicit = 0;
+	row.custom_explicit_discount = 0;
+}
+
+function set_discount_override(row, discount_percentage) {
+	row.custom_is_discount_explicit = 1;
+	row.custom_explicit_discount = discount_percentage;
+	row.custom_is_rate_overridden = 0;
+	row.custom_manual_rate = 0;
+}
+
+function reset_row_override(row) {
+	if (!row) return;
+	row.custom_is_rate_overridden = 0;
+	row.custom_manual_rate = 0;
+	row.custom_is_discount_explicit = 0;
+	row.custom_explicit_discount = 0;
+}
+
+function apply_pricing_rules(frm) {
+	if (!frm.doc.customer || !frm.doc.items || !frm.doc.items.length) return;
+
+	const request_id = ++pricing_request_sequence;
+	is_applying_pricing_rules = true;
 
 	frappe.call({
 		method: 'rp_vintrosys.overrides.sales_order.get_pricing_rule_details',
-		args: {
-			doc: frm.doc
+		args: { doc: frm.doc },
+		callback(r) {
+			if (request_id !== pricing_request_sequence) return; // a newer edit already superseded this
+			apply_server_response(frm, r.message);
 		},
-		callback: function(r) {
-			if (r.message && Array.isArray(r.message)) {
-				_rp_setting_pricing = true;
-				try {
-					r.message.forEach((item_data, idx) => {
-						let row = frm.doc.items[idx];
-						if (row && item_data) {
-							row.pricing_rules = item_data.pricing_rules || '';
-							if (item_data.price_list_rate !== undefined) {
-								row.price_list_rate = item_data.price_list_rate;
-							}
-							if (item_data.discount_percentage !== undefined) {
-								row.discount_percentage = item_data.discount_percentage;
-							}
-							if (item_data.discount_amount !== undefined) {
-								row.discount_amount = item_data.discount_amount;
-							}
-							if (item_data.rate !== undefined) {
-								row.rate = item_data.rate;
-							}
-							if (item_data.amount !== undefined) {
-								row.amount = item_data.amount;
-							}
-							if (item_data.custom_is_rate_overridden !== undefined) {
-								row.custom_is_rate_overridden = item_data.custom_is_rate_overridden;
-							}
-							if (item_data.custom_is_discount_explicit !== undefined) {
-								row.custom_is_discount_explicit = item_data.custom_is_discount_explicit;
-							}
-						}
-					});
-					frm.refresh_field('items');
-				} finally {
-					setTimeout(() => {
-						_rp_setting_pricing = false;
-					}, 600);
-				}
-			} else {
-				_rp_setting_pricing = false;
-			}
+		error() {
+			if (request_id === pricing_request_sequence) is_applying_pricing_rules = false;
 		},
-		error: function() {
-			_rp_setting_pricing = false;
-		}
 	});
+}
+
+const SERVER_RESPONSE_FIELDS = [
+	'price_list_rate', 'discount_percentage', 'discount_amount',
+	'rate', 'amount', 'custom_is_rate_overridden', 'custom_is_discount_explicit',
+];
+
+function apply_server_response(frm, items_data) {
+	if (!Array.isArray(items_data)) {
+		is_applying_pricing_rules = false;
+		return;
+	}
+	try {
+		items_data.forEach((item_data, idx) => update_row_from_server(frm.doc.items[idx], item_data));
+		frm.refresh_field('items');
+		frm.trigger('calculate_taxes_and_totals');
+	} finally {
+		is_applying_pricing_rules = false;
+	}
+}
+
+function update_row_from_server(row, item_data) {
+	if (!row || !item_data) return;
+	row.pricing_rules = item_data.pricing_rules || '';
+	for (const field of SERVER_RESPONSE_FIELDS) {
+		if (item_data[field] !== undefined) row[field] = item_data[field];
+	}
 }
