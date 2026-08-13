@@ -68,9 +68,17 @@ def _clear_margin(item):
 
 
 def _recalculate_item_totals(item, conversion_rate):
-    """Recomputes amount/base_rate/net_rate/etc. from item.rate (set by the caller)."""
-    item.amount = flt(item.rate * item.qty, _precision(item, "amount"))
-    item.base_rate = flt(item.rate * conversion_rate, 2)
+    """Recomputes amount/base_rate/net_rate/etc. from item.rate (set by the caller).
+
+    item.rate/item.qty are run through flt() individually before the multiplication, not just
+    the result - a row can still be mid-entry (item_code picked, qty not typed yet) when this
+    runs, because apply_pricing_rules() on the client sends the *whole* document on every
+    single field edit, so an in-progress row on a different line can ride along as None.
+    """
+    rate = item.rate = flt(item.rate)
+    qty = flt(item.qty)
+    item.amount = flt(rate * qty, _precision(item, "amount"))
+    item.base_rate = flt(rate * conversion_rate, 2)
     item.base_amount = flt(item.amount * conversion_rate, 2)
     item.net_rate = item.rate
     item.net_amount = item.amount
