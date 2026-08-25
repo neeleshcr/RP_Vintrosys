@@ -43,10 +43,9 @@ app_license = "mit"
 # page_js = {"page" : "public/js/file.js"}
 
 # include js in doctype views
-# doctype_js = {"doctype" : "public/js/doctype.js"}
-# doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
-# doctype_tree_js = {"doctype" : "public/js/doctype_tree.js"}
-# doctype_calendar_js = {"doctype" : "public/js/doctype_calendar.js"}
+doctype_js = {
+	"Sales Order": "public/js/sales_order.js"
+}
 
 # Svg Icons
 # ------------------
@@ -137,13 +136,16 @@ app_license = "mit"
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Sales Order": {
+		"before_validate": "rp_vintrosys.overrides.sales_order.apply_pricing_rule",
+		"validate": "rp_vintrosys.overrides.sales_order.apply_pricing_rule",
+	},
+	"Sales Invoice": {
+		"before_validate": "rp_vintrosys.overrides.sales_invoice.fix_consolidated_sales_invoice_gst",
+		"validate": "rp_vintrosys.overrides.sales_invoice.fix_consolidated_sales_invoice_gst",
+	}
+}
 
 # Scheduled Tasks
 # ---------------
@@ -243,6 +245,18 @@ app_license = "mit"
 # }
 
 fixtures = [
+    {
+        "dt": "Custom Field",
+        "filters": [
+            ["dt", "in", ["POS Invoice", "Sales Order Item"]]
+        ]
+    },
+    {
+        "dt": "Property Setter",
+        "filters": [
+            ["doc_type", "=", "POS Invoice"]
+        ]
+    },
     {
         "dt": "Server Script",
         "filters": [
