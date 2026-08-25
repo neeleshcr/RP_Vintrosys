@@ -2,6 +2,8 @@ import frappe
 from frappe.utils import cint, flt, today
 from erpnext.accounts.doctype.pricing_rule.pricing_rule import get_pricing_rule_for_item
 
+STANDARD_SELLING_PRICE_LIST = "Standard Selling"
+
 CUSTOM_FIELDS = [
     {
         "fieldname": "custom_is_rate_overridden",
@@ -59,22 +61,11 @@ def _precision(item, fieldname, default=2):
 
 
 def _clear_margin(item):
-    """This app always resolves rate/discount itself, so a row never carries a Margin.
-    Left uncleared, ERPNext's own calculate_item_rate() stamps margin fields onto a row
-    whenever rate > price_list_rate, which then corrupts the next recalculation.
-    """
     item.margin_type = None
     item.margin_rate_or_amount = 0.0
 
 
 def _recalculate_item_totals(item, conversion_rate):
-    """Recomputes amount/base_rate/net_rate/etc. from item.rate (set by the caller).
-
-    item.rate/item.qty are run through flt() individually before the multiplication, not just
-    the result - a row can still be mid-entry (item_code picked, qty not typed yet) when this
-    runs, because apply_pricing_rules() on the client sends the *whole* document on every
-    single field edit, so an in-progress row on a different line can ride along as None.
-    """
     rate = item.rate = flt(item.rate)
     qty = flt(item.qty)
     item.amount = flt(rate * qty, _precision(item, "amount"))
@@ -86,15 +77,15 @@ def _recalculate_item_totals(item, conversion_rate):
     item.base_net_amount = item.base_amount
 
 
-def _apply_manual_rate(item, price_list_rate):
-    """Precedence 1: a manually typed Rate/Amount wins outright and clears any discount override."""
+def _apply_manual_rate(item, price_list_rate, suppress_derived_discount=False):
+
     item.custom_is_discount_explicit = 0
     item.custom_explicit_discount = 0.0
 
     item.rate = flt(item.get("custom_manual_rate") or item.rate, _precision(item, "rate"))
     item.pricing_rules = ""
 
-    if price_list_rate <= 0:
+    if suppress_derived_discount or price_list_rate <= 0:
         item.discount_amount = 0.0
         item.discount_percentage = 0.0
         return
@@ -153,12 +144,13 @@ def _get_pricing_rule_args(doc, item, customer_group, territory, price_list_rate
 
 
 def _apply_pricing_rule_or_price_list(doc, item, customer_group, territory, price_list_rate):
-    """Precedence 3 & 4: no override on this row - resolve fresh from the Pricing Rule,
-    falling back to the plain Price List rate.
-    """
+
     rate_precision = _precision(item, "rate")
-    args = _get_pricing_rule_args(doc, item, customer_group, territory, price_list_rate)
-    rule = get_pricing_rule_for_item(args)
+
+    rule = None
+    if doc.selling_price_list != STANDARD_SELLING_PRICE_LIST:
+        args = _get_pricing_rule_args(doc, item, customer_group, territory, price_list_rate)
+        rule = get_pricing_rule_for_item(args)
 
     if not (rule and rule.get("has_pricing_rule")):
         item.pricing_rules = ""
@@ -188,9 +180,7 @@ def _apply_pricing_rule_or_price_list(doc, item, customer_group, territory, pric
 
 
 def _resolve_item_pricing(doc, item, customer_group, territory):
-    """Resolves Rate/Discount for one row using a single precedence:
-    manual rate > manual discount > pricing rule > price list.
-    """
+
     if not flt(item.price_list_rate) and doc.selling_price_list:
         item.price_list_rate = flt(frappe.db.get_value(
             "Item Price",
@@ -202,7 +192,7 @@ def _resolve_item_pricing(doc, item, customer_group, territory):
     _clear_margin(item)
 
     if cint(item.get("custom_is_rate_overridden")):
-        _apply_manual_rate(item, price_list_rate)
+        _apply_manual_rate(item, price_list_rate, suppress_derived_discount=doc.selling_price_list == STANDARD_SELLING_PRICE_LIST)
     elif cint(item.get("custom_is_discount_explicit")):
         _apply_manual_discount(item, price_list_rate)
     else:
@@ -210,16 +200,9 @@ def _resolve_item_pricing(doc, item, customer_group, territory):
 
 
 def _reassert_manual_rate_overrides(doc, conversion_rate):
-    """calculate_taxes_and_totals() should not touch overridden rows (pricing_rules was
-    cleared already), but re-assert here too so a save can never silently drop a manual
-    rate override.
 
-    For a clamped markup row (rate > price_list_rate, discount shown as 0%), rate =
-    price_list_rate - discount_amount no longer holds, so calculate_taxes_and_totals() falls
-    through to ERPNext's own margin handling and re-stamps margin_type on the row even though
-    rate itself never actually changed. Clear it unconditionally, before the "already correct"
-    early-exit below would otherwise skip past it.
-    """
+    is_standard_selling = doc.selling_price_list == STANDARD_SELLING_PRICE_LIST
+
     for item in doc.get("items"):
         if not item.item_code or not cint(item.get("custom_is_rate_overridden")):
             continue
@@ -228,6 +211,15 @@ def _reassert_manual_rate_overrides(doc, conversion_rate):
 
         rate_precision = _precision(item, "rate")
         target_rate = flt(item.get("custom_manual_rate") or item.rate, rate_precision)
+
+        if is_standard_selling:
+            # Always re-zero here, independent of whether rate itself drifted - see docstring.
+            item.rate = target_rate
+            item.discount_amount = 0.0
+            item.discount_percentage = 0.0
+            _recalculate_item_totals(item, conversion_rate)
+            continue
+
         if flt(item.rate, rate_precision) == target_rate:
             continue
 
@@ -245,14 +237,17 @@ def _reassert_manual_rate_overrides(doc, conversion_rate):
 
 
 def apply_pricing_rule(doc, method=None):
-    """Doc event hook for Sales Order (before_validate/validate).
 
-    Resolves every item row via _resolve_item_pricing() so Rate and Discount % are always
-    decided together and stay consistent across Qty/Rate edits, then re-asserts manual rate
-    overrides once more after calculate_taxes_and_totals() as a safety net.
-    """
     if not doc.get("customer") or not doc.get("items"):
         return
+
+    # Belt-and-suspenders alongside the client-side toggle in public/js/sales_order.js: forces
+    # ERPNext's own core rate/discount recompute (calculate_item_rate() in
+    # erpnext/controllers/taxes_and_totals.py checks self.doc.ignore_pricing_rule) to leave
+    # Standard Selling rows alone too, regardless of how the document was created (API,
+    # imports, "Get Items From", or the client JS never having run for this save).
+    if doc.selling_price_list == STANDARD_SELLING_PRICE_LIST:
+        doc.ignore_pricing_rule = 1
 
     setup_custom_fields()
     customer_group = frappe.db.get_value("Customer", doc.customer, "customer_group")
@@ -273,9 +268,7 @@ def apply_pricing_rule(doc, method=None):
 
 @frappe.whitelist()
 def get_pricing_rule_details(doc):
-    """Whitelisted endpoint for the client JS: applies pricing rules to a (possibly unsaved)
-    Sales Order and returns the resolved values for each item row.
-    """
+
     if isinstance(doc, str):
         doc = frappe.parse_json(doc)
 

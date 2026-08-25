@@ -6,18 +6,7 @@ _original_set_default_treatment = ItemGSTTreatment.set_default_treatment
 
 
 def patched_set_default_treatment(self):
-    """
-    Patch for India Compliance's ItemGSTTreatment.set_default_treatment.
-    
-    In ERPNext POS Invoice Consolidation, tax rows are converted to charge_type='Actual'.
-    India Compliance's get_default_treatment() ignores 'Actual' rows and defaults
-    all items without an item_tax_template to 'Taxable'.
-    This causes Nil-Rated POS items (which have no item_tax_template) to be force-overwritten
-    as 'Taxable', triggering a ValidationError ('No GST is being charged on Taxable Items').
-    
-    This patch ensures that for consolidated Sales Invoices, any Nil-Rated, Exempted,
-    Non-GST, or Zero-Rated treatment from the original POS Invoice Item is preserved.
-    """
+
     _original_set_default_treatment(self)
 
     if getattr(self, "doc", None) and self.doc.get("is_consolidated"):
@@ -42,10 +31,7 @@ ItemGSTTreatment.set_default_treatment = patched_set_default_treatment
 
 
 def fix_consolidated_sales_invoice_gst(doc, method=None):
-    """
-    Server-side hook for Sales Invoice doc_events (before_validate/validate).
-    Restores original GST fields for consolidated Sales Invoice items.
-    """
+
     if isinstance(doc, str):
         doc = frappe.parse_json(doc)
 

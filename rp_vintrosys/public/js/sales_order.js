@@ -1,11 +1,28 @@
 let is_applying_pricing_rules = false;
-let pricing_request_sequence = 0; 
+let pricing_request_sequence = 0;
+
+const STANDARD_SELLING_PRICE_LIST = 'Standard Selling';
 
 frappe.ui.form.on('Sales Order', {
 	setup: take_over_native_qty_handler,
+	refresh: sync_ignore_pricing_rule,
 	customer: recompute_after_native_flow,
-	selling_price_list: recompute_after_native_flow,
+	selling_price_list(frm) {
+		sync_ignore_pricing_rule(frm);
+		recompute_after_native_flow(frm);
+	},
 });
+
+function sync_ignore_pricing_rule(frm) {
+	const should_ignore = frm.doc.selling_price_list === STANDARD_SELLING_PRICE_LIST;
+	if (should_ignore && !frm.doc.ignore_pricing_rule) {
+		frm.set_value('ignore_pricing_rule', 1);
+		frm.doc.__rp_auto_ignore_pricing_rule = true;
+	} else if (!should_ignore && frm.doc.ignore_pricing_rule && frm.doc.__rp_auto_ignore_pricing_rule) {
+		frm.set_value('ignore_pricing_rule', 0);
+		frm.doc.__rp_auto_ignore_pricing_rule = false;
+	}
+}
 
 frappe.ui.form.on('Sales Order Item', {
 	item_code: on_item_code_change,
@@ -30,12 +47,17 @@ function take_over_native_qty_handler(frm) {
 
 function recompute_after_native_flow(frm) {
 	if (!frm.doc.customer) return;
+	is_applying_pricing_rules = true;
 	frappe.after_ajax(() => setTimeout(() => apply_pricing_rules(frm), 400));
 }
 
 function on_item_code_change(frm, cdt, cdn) {
 	reset_row_override(locals[cdt][cdn]);
-	frappe.after_ajax(() => setTimeout(() => apply_pricing_rules(frm), 300));
+	is_applying_pricing_rules = true;
+	frappe.after_ajax(() => setTimeout(() => {
+		reset_row_override(locals[cdt][cdn]);
+		apply_pricing_rules(frm);
+	}, 300));
 }
 
 function on_qty_change(frm) {
@@ -44,6 +66,8 @@ function on_qty_change(frm) {
 
 function on_uom_change(frm) {
 	if (is_applying_pricing_rules) return;
+
+	is_applying_pricing_rules = true;
 	frappe.after_ajax(() => setTimeout(() => apply_pricing_rules(frm), 300));
 }
 
@@ -71,8 +95,7 @@ function on_discount_percentage_change(frm, cdt, cdn) {
 	apply_pricing_rules(frm);
 }
 
-// A manual Rate/Amount and a manual Discount % are mutually exclusive - setting one always
-// clears the other so the two can never disagree about which value is authoritative.
+
 function set_rate_override(row, rate) {
 	row.custom_is_rate_overridden = 1;
 	row.custom_manual_rate = rate;
@@ -96,7 +119,11 @@ function reset_row_override(row) {
 }
 
 function apply_pricing_rules(frm) {
-	if (!frm.doc.customer || !frm.doc.items || !frm.doc.items.length) return;
+	if (!frm.doc.customer || !frm.doc.items || !frm.doc.items.length) {
+
+		is_applying_pricing_rules = false;
+		return;
+	}
 
 	const request_id = ++pricing_request_sequence;
 	is_applying_pricing_rules = true;
